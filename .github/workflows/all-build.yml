@@ -1,74 +1,47 @@
-name: Build All Platforms
+name: build
 
 on:
   push:
     branches: [ "main" ]
 
-# Grant GitHub Actions permission to create a Release
+# 1. MUST HAVE: Grant permission to create a release
 permissions:
   contents: write 
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4 
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5 
         with:
           go-version-file: go.mod
 
-      # 1. Compile for EVERY combination using a simple loop
-      - name: Build for ALL Platforms and Architectures
-        run: |
-          mkdir -p dist
-          
-          # List every OS/Arch combination you want here:
-          TARGETS=(
-            "windows/amd64" "windows/386" "windows/arm64"
-            "linux/amd64" "linux/386" "linux/arm" "linux/arm64" "linux/riscv64" "linux/mips64"
-            "darwin/amd64" "darwin/arm64"
-            "freebsd/amd64" "freebsd/arm64"
-            "openbsd/amd64" "openbsd/arm64"
-          )
-          
-          for TARGET in "${TARGETS[@]}"; do
-            # Split the target into GOOS and GOARCH
-            GOOS=${TARGET%/*}
-            GOARCH=${TARGET#*/}
-            BINARY_NAME="picoclaw-${GOOS}-${GOARCH}"
-            
-            # Add .exe extension if building for Windows
-            if [ "$GOOS" = "windows" ]; then
-              BINARY_NAME="${BINARY_NAME}.exe"
-            fi
-            
-            echo "Building $BINARY_NAME ..."
-            
-            # Compile with CGO disabled for maximum portability
-            GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/$BINARY_NAME .
-          done
+      - name: Build
+        run: make build-all
 
-      # 2. Auto-grab version (Date + Git Commit Hash)
-      - name: Generate Version Name
+      # 2. Automatically generate a unique version tag (e.g., dev-20260228-a1b2c3d)
+      - name: Generate Version Tag
         run: |
           DATE=$(date +'%Y%m%d')
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           echo "TAG_NAME=dev-${DATE}-${SHORT_SHA}" >> $GITHUB_ENV
 
-      # 3. Create the Release and upload all the built files
-      - name: Publish Auto-Release
+      # 3. Create the release and upload the binaries
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
           name: Auto-Build ${{ env.TAG_NAME }}
-          body: |
-            🚀 Comprehensive cross-platform build from `main`.
-            - **Commit:** `${{ github.sha }}`
-            
-            *Automatically built for Windows, macOS, Linux, FreeBSD, and OpenBSD across x86, ARM, and RISC-V architectures.*
-          draft: false
-          prerelease: true 
-          files: dist/* # Uploads everything we put in the 'dist' folder
+          body: "Automated build triggered by push to main. Commit: ${{ github.sha }}"
+          prerelease: true # Keeps it marked as a pre-release so it doesn't confuse standard users
+          fail_on_unmatched_files: false
+          # Uploads output binaries. Adjust these paths if PicoClaw outputs to a specific folder!
+          files: |
+            build/*
+            bin/*
+            picoclaw-*
+            *.exe
