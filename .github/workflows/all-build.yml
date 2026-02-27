@@ -1,0 +1,106 @@
+name: Auto Build and Release
+
+# 1. Trigger automatically when code is pushed to 'main'
+on:
+  push:
+    branches:
+      - main # (Change to 'master' if that is your default branch name)
+# 2. Grant permissions to create a release automatically
+permissions:
+  contents: write 
+
+jobs:
+  # ==========================================
+  # JOB 1: COMPILE FOR ALL ARCHITECTURES
+  # ==========================================
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: linux
+            arch: arm       
+          - os: linux
+            arch: riscv64   
+          - os: windows
+            arch: amd64
+          - os: darwin      
+            arch: amd64
+          - os: darwin      
+            arch: arm64
+            
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Build Binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          BINARY_NAME=picoclaw-${{ matrix.os }}-${{ matrix.arch }}
+          
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          
+          go build -ldflags="-s -w" -o $BINARY_NAME .
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.os }}-${{ matrix.arch }}
+          path: picoclaw-*
+
+  # ==========================================
+  # JOB 2: AUTO-GENERATE VERSION & RELEASE
+  # ==========================================
+  release:
+    name: Auto-Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all compiled binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: binaries/
+
+      # Automatically generate a version string based on Date + Git SHA
+      - name: Generate Version Name
+        run: |
+          DATE=$(date +'%Y%m%d')
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          AUTO_VERSION="dev-${DATE}-${SHORT_SHA}"
+          
+          echo "TAG_NAME=${AUTO_VERSION}" >> $GITHUB_ENV
+
+      # Publish the release silently
+      - name: Publish Automated Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: Auto-Build ${{ env.TAG_NAME }}
+          body: |
+            🚀 Automated continuous build.
+            - **Commit:** `${{ github.sha }}`
+            
+            *Note: This is an automatically generated snapshot release.*
+          draft: false
+          prerelease: true # Marked as pre-release so it doesn't look like an official stable version
+          files: binaries/*
