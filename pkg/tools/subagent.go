@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -27,7 +26,6 @@ type SubagentManager struct {
 	mu             sync.RWMutex
 	provider       providers.LLMProvider
 	defaultModel   string
-	bus            *bus.MessageBus
 	workspace      string
 	tools          *ToolRegistry
 	maxIterations  int
@@ -41,13 +39,11 @@ type SubagentManager struct {
 func NewSubagentManager(
 	provider providers.LLMProvider,
 	defaultModel, workspace string,
-	bus *bus.MessageBus,
 ) *SubagentManager {
 	return &SubagentManager{
 		tasks:         make(map[string]*SubagentTask),
 		provider:      provider,
 		defaultModel:  defaultModel,
-		bus:           bus,
 		workspace:     workspace,
 		tools:         NewToolRegistry(),
 		maxIterations: 10,
@@ -113,9 +109,6 @@ func (sm *SubagentManager) Spawn(
 }
 
 func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask, callback AsyncCallback) {
-	task.Status = "running"
-	task.Created = time.Now().UnixMilli()
-
 	// Build system prompt for subagent
 	systemPrompt := `You are a subagent. Complete the given task independently and report the result.
 You have access to tools - use them as needed to complete your task.
@@ -214,20 +207,6 @@ After completing the task, provide a clear summary of what was done.`
 			Async:   false,
 		}
 	}
-
-	// Send announce message back to main agent
-	if sm.bus != nil {
-		announceContent := fmt.Sprintf("Task '%s' completed.\n\nResult:\n%s", task.Label, task.Result)
-		pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer pubCancel()
-		sm.bus.PublishInbound(pubCtx, bus.InboundMessage{
-			Channel:  "system",
-			SenderID: fmt.Sprintf("subagent:%s", task.ID),
-			// Format: "original_channel:original_chat_id" for routing back
-			ChatID:  fmt.Sprintf("%s:%s", task.OriginChannel, task.OriginChatID),
-			Content: announceContent,
-		})
-	}
 }
 
 func (sm *SubagentManager) GetTask(taskID string) (*SubagentTask, bool) {
@@ -235,6 +214,18 @@ func (sm *SubagentManager) GetTask(taskID string) (*SubagentTask, bool) {
 	defer sm.mu.RUnlock()
 	task, ok := sm.tasks[taskID]
 	return task, ok
+}
+
+// GetTaskCopy returns a copy of the task with the given ID, taken under the
+// read lock, so the caller receives a consistent snapshot with no data race.
+func (sm *SubagentManager) GetTaskCopy(taskID string) (SubagentTask, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	task, ok := sm.tasks[taskID]
+	if !ok {
+		return SubagentTask{}, false
+	}
+	return *task, true
 }
 
 func (sm *SubagentManager) ListTasks() []*SubagentTask {
@@ -246,6 +237,19 @@ func (sm *SubagentManager) ListTasks() []*SubagentTask {
 		tasks = append(tasks, task)
 	}
 	return tasks
+}
+
+// ListTaskCopies returns value copies of all tasks, taken under the read lock,
+// so callers receive consistent snapshots with no data race.
+func (sm *SubagentManager) ListTaskCopies() []SubagentTask {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	copies := make([]SubagentTask, 0, len(sm.tasks))
+	for _, task := range sm.tasks {
+		copies = append(copies, *task)
+	}
+	return copies
 }
 
 // SubagentTool executes a subagent task synchronously and returns the result.
